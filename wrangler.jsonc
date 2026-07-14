@@ -1,0 +1,20 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "v-poiskah-smysla",
+  "main": "dist/server/index.js",
+  "compatibility_date": "2026-07-14",
+  "assets": {
+    "directory": "dist/client"
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "v-poiskah-smysla-db",
+      "database_id": "3ff7a730-f835-4d8b-93ad-ba03fa43f623"
+    }
+  ]
+}

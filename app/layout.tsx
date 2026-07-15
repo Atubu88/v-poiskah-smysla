@@ -23,7 +23,7 @@ export default function RootLayout({
       <head>
         <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
         <meta name="theme-color" content="#174f3b" />
-        <script src="https://telegram.org/js/telegram-web-app.js?59" async></script>
+        <script src="https://telegram.org/js/telegram-web-app.js?59" defer></script>
       </head>
       <body className="antialiased">
         {children}

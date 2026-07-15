@@ -2,7 +2,7 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "v-poiskah-smysla",
   "main": "dist/server/index.js",
-  "compatibility_date": "2026-07-14",
+  "compatibility_date": "2026-05-22",
   "assets": {
     "directory": "dist/client"
   },
@@ -14,7 +14,8 @@
     {
       "binding": "DB",
       "database_name": "v-poiskah-smysla-db",
-      "database_id": "3ff7a730-f835-4d8b-93ad-ba03fa43f623"
+      "database_id": "3ff7a730-f835-4d8b-93ad-ba03fa43f623",
+      "migrations_dir": "migrations"
     }
   ]
 }

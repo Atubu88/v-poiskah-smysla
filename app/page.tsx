@@ -10,29 +10,22 @@ type Progress = {
   completedTasks: string[];
   reflections: Record<string, number[]>;
 };
-type TelegramUser = {
-  id: number;
-  first_name?: string;
-  username?: string;
-};
-
-type TelegramWebAppUnsafeData = {
-  user?: TelegramUser;
-};
-
 type TelegramWebApp = {
   initData?: string;
-  initDataUnsafe?: TelegramWebAppUnsafeData;
   colorScheme?: string;
   ready: () => void;
   expand: () => void;
   openTelegramLink?: (url: string) => void;
-  BackButton: { show: () => void; hide: () => void; onClick: (fn: () => void) => void };
+  BackButton: {
+    show: () => void;
+    hide: () => void;
+    onClick: (fn: () => void) => void;
+    offClick?: (fn: () => void) => void;
+  };
   HapticFeedback?: { notificationOccurred: (type: string) => void };
 };
 
 const STORAGE_KEY = "meaning-journey-v2";
-const TELEGRAM_IDENTIFY_KEY = "meaning-journey-telegram-identify-v1";
 const initialProgress: Progress = { completedStages: [], completedTasks: [], reflections: {} };
 const tg = () => typeof window === "undefined" ? undefined : (window as typeof window & { Telegram?: { WebApp?: TelegramWebApp } }).Telegram?.WebApp;
 
@@ -51,70 +44,94 @@ export default function Home() {
   const [progress, setProgress] = useState<Progress>(initialProgress);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [hydrated, setHydrated] = useState(false);
+  const [telegramSyncReady, setTelegramSyncReady] = useState(false);
   const [toast, setToast] = useState("");
   const active = stages.find(stage => stage.id === activeId) ?? null;
 
   useEffect(() => {
-    const app = tg();
     let cancelled = false;
     let attemptCount = 0;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let identifyInFlight = false;
+    let identified = false;
+    let configuredApp: TelegramWebApp | undefined;
+    const handleTelegramBack = () => setActiveId(null);
 
-    const identifyTelegramUser = async () => {
-      if (cancelled) return;
+    const configureTelegram = (app: TelegramWebApp) => {
+      if (configuredApp === app) return;
+      configuredApp = app;
+      app.ready();
+      app.expand();
+      setTheme(app.colorScheme === "dark" ? "dark" : "light");
+      app.BackButton.onClick(handleTelegramBack);
+    };
 
-      const currentApp = tg();
-      const user = currentApp?.initDataUnsafe?.user;
-      const initData = currentApp?.initData || "";
-      const identifyKey = user?.id ? `${TELEGRAM_IDENTIFY_KEY}:${user.id}` : null;
+    function scheduleRetry(delay?: number) {
+      if (cancelled || identified || attemptCount >= 40) return;
+      if (retryTimer) clearTimeout(retryTimer);
+      const retryDelay = delay ?? Math.min(250 + attemptCount * 100, 1_500);
+      attemptCount += 1;
+      retryTimer = setTimeout(() => void identifyTelegramUser(), retryDelay);
+    }
 
-      if (identifyKey && sessionStorage.getItem(identifyKey) === "done") {
+    async function identifyTelegramUser() {
+      if (cancelled || identified || identifyInFlight) return;
+      const app = tg();
+      if (app) configureTelegram(app);
+      if (!app?.initData) {
+        scheduleRetry();
         return;
       }
 
-      if (user?.id && initData) {
-        try {
-          const response = await fetch("/api/telegram/identify", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ user, initData }),
-          });
+      identifyInFlight = true;
+      try {
+        const response = await fetch("/api/telegram/identify", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ initData: app.initData }),
+        });
 
-          if (response.ok) {
-            if (identifyKey) sessionStorage.setItem(identifyKey, "done");
-            return;
-          }
-        } catch {
-          // Retry below.
+        if (response.ok) {
+          identified = true;
+          setTelegramSyncReady(true);
+          return;
         }
-      }
 
-      attemptCount += 1;
-      if (attemptCount < 6 && !cancelled) {
-        retryTimer = setTimeout(identifyTelegramUser, 400 * attemptCount);
+        if (response.status === 400 || response.status === 401) {
+          identified = true;
+          return;
+        }
+        scheduleRetry(1_000);
+      } catch {
+        scheduleRetry(1_000);
+      } finally {
+        identifyInFlight = false;
       }
+    }
+
+    const resumeTelegramIdentification = () => {
+      if (document.visibilityState !== "hidden") void identifyTelegramUser();
     };
 
     queueMicrotask(() => {
-      if (app?.initData) {
-        app.ready();
-        app.expand();
-        setTheme(app.colorScheme === "dark" ? "dark" : "light");
-        app.BackButton.onClick(() => setActiveId(null));
-        void identifyTelegramUser();
-      } else {
-        setTheme(matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
-      }
+      setTheme(matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
       try {
         const saved = localStorage.getItem(STORAGE_KEY);
         if (saved) setProgress({ ...initialProgress, ...JSON.parse(saved) });
       } catch { localStorage.removeItem(STORAGE_KEY); }
       setHydrated(true);
+      void identifyTelegramUser();
     });
+
+    window.addEventListener("pageshow", resumeTelegramIdentification);
+    document.addEventListener("visibilitychange", resumeTelegramIdentification);
 
     return () => {
       cancelled = true;
       if (retryTimer) clearTimeout(retryTimer);
+      window.removeEventListener("pageshow", resumeTelegramIdentification);
+      document.removeEventListener("visibilitychange", resumeTelegramIdentification);
+      configuredApp?.BackButton.offClick?.(handleTelegramBack);
     };
   }, []);
 
@@ -127,6 +144,26 @@ export default function Home() {
       else app.BackButton.hide();
     }
   }, [theme, progress, hydrated, active]);
+
+  useEffect(() => {
+    if (!hydrated || !telegramSyncReady) return;
+    const app = tg();
+    if (!app?.initData) return;
+
+    const timer = setTimeout(() => {
+      void fetch("/api/telegram/progress", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          initData: app.initData,
+          completedStages: progress.completedStages,
+          completedTasks: progress.completedTasks,
+        }),
+      }).catch(() => undefined);
+    }, 600);
+
+    return () => clearTimeout(timer);
+  }, [hydrated, telegramSyncReady, progress.completedStages, progress.completedTasks]);
 
   function go(next: Tab) {
     setActiveId(null);
@@ -162,12 +199,27 @@ export default function Home() {
     setProgress(current => ({ ...current, completedStages: uniq([...current.completedStages, stage.id]) }));
   }
 
-  function resetProgress() {
+  async function resetProgress() {
     if (confirm("Начать путь заново и удалить сохранённый прогресс?")) {
       setProgress(initialProgress);
       setActiveId(null);
       setToast("Путь начат заново");
       setTimeout(() => setToast(""), 2200);
+
+      const app = tg();
+      if (telegramSyncReady && app?.initData) {
+        try {
+          const response = await fetch("/api/telegram/progress", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ initData: app.initData, reset: true }),
+          });
+          if (!response.ok) throw new Error("Progress reset failed");
+        } catch {
+          setToast("Локальный прогресс удалён. Серверную отметку не удалось удалить.");
+          setTimeout(() => setToast(""), 3200);
+        }
+      }
     }
   }
 
@@ -476,6 +528,6 @@ function AboutView({ onReset }: { onReset: () => void }) {
     </div>
     <div className="book-structure"><span className="kicker">Как устроен путь</span>{["Наблюдение из обычной жизни", "Вопрос к самому себе", "Возможное возражение", "Пример, который можно проверить", "Вывод и новый вопрос"].map(item => <p key={item}>{item}<span>✓</span></p>)}</div>
     <div className="notice"><span>i</span><p>Не торопитесь нажимать варианты. Ценность пути не в скорости и не в количестве совпавших ответов, а в честности перед вопросом.</p></div>
-    <div className="privacy"><h2>Прогресс остаётся у вас</h2><p>Ответы сохраняются только в браузере на этом устройстве. Аккаунт и передача личных ответов не требуются.</p><button className="danger-link" onClick={onReset}>Удалить прогресс и начать заново</button></div>
+    <div className="privacy"><h2>Личные ответы остаются у вас</h2><p>Выбранные ответы и размышления сохраняются только в браузере. В Telegram синхронизируются лишь отметки о завершённых этапах и шагах — без содержания ответов.</p><button className="danger-link" onClick={onReset}>Удалить прогресс и начать заново</button></div>
   </section>;
 }
